@@ -23,8 +23,6 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
-import io.flutter.plugin.common.PluginRegistry;
-import io.flutter.view.FlutterNativeView;
 import io.flutter.view.TextureRegistry;
 import kotlin.Unit;
 import kotlin.jvm.functions.Function1;
@@ -40,7 +38,6 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
     private MethodChannel channel;
     TextureRegistry textureRegistry;
     Context context;
-    io.flutter.plugin.common.PluginRegistry.Registrar registrar;
     FlutterPlugin.FlutterAssets flutterAssets;
     private Handler handler = new Handler(Looper.getMainLooper());
 
@@ -97,14 +94,6 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
     public FlutterPagPlugin() {
     }
 
-    public FlutterPagPlugin(io.flutter.plugin.common.PluginRegistry.Registrar registrar) {
-        pluginList.add(this);
-        this.registrar = registrar;
-        textureRegistry = registrar.textures();
-        context = registrar.context();
-        DataLoadHelper.INSTANCE.initDiskCache(context, DataLoadHelper.INSTANCE.DEFAULT_DIS_SIZE);
-    }
-
     @Override
     public void onAttachedToEngine(@NonNull FlutterPluginBinding binding) {
         if (!pluginList.contains(this)) {
@@ -116,18 +105,6 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
         context = binding.getApplicationContext();
         textureRegistry = binding.getTextureRegistry();
         DataLoadHelper.INSTANCE.initDiskCache(context, DataLoadHelper.INSTANCE.DEFAULT_DIS_SIZE);
-    }
-
-    public static void registerWith(io.flutter.plugin.common.PluginRegistry.Registrar registrar) {
-        final FlutterPagPlugin plugin = new FlutterPagPlugin(registrar);
-        registrar.addViewDestroyListener(new PluginRegistry.ViewDestroyListener() {
-            @Override
-            public boolean onViewDestroy(FlutterNativeView flutterNativeView) {
-                plugin.onDestroy();
-                pluginList.remove(this);
-                return false; // We are not interested in assuming ownership of the NativeView.
-            }
-        });
     }
 
     @Override
@@ -200,13 +177,7 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
             initPagPlayerAndCallback(PAGFile.Load(bytes), call, result);
         } else if (assetName != null) {
             String assetKey;
-            if (registrar != null) {
-                if (flutterPackage == null || flutterPackage.isEmpty()) {
-                    assetKey = registrar.lookupKeyForAsset(assetName);
-                } else {
-                    assetKey = registrar.lookupKeyForAsset(assetName, flutterPackage);
-                }
-            } else if (flutterAssets != null) {
+            if (flutterAssets != null) {
                 if (flutterPackage == null || flutterPackage.isEmpty()) {
                     assetKey = flutterAssets.getAssetFilePathByName(assetName);
                 } else {
