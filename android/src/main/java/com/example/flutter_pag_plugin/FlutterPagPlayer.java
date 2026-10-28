@@ -18,7 +18,7 @@ import io.flutter.plugin.common.MethodChannel;
 public class FlutterPagPlayer extends PAGPlayer {
 
     private final ValueAnimator animator = ValueAnimator.ofFloat(0.0F, 1.0F);
-    private boolean isRelease;
+    private volatile boolean isRelease;
     private long currentPlayTime = 0L;
     private double progress = 0;
     private double initProgress = 0;
@@ -136,25 +136,23 @@ public class FlutterPagPlayer extends PAGPlayer {
 
     @Override
     public void release() {
-        super.release();
+        // isRelease is set first (before any teardown) so any flush() call made after
+        // release() has been requested is rejected as early as possible.
+        isRelease = true;
         animator.cancel();
         animator.removeAllUpdateListeners();
         animator.removeAllListeners();
         WorkThreadExecutor.getInstance().post(() -> {
-            if (WorkThreadExecutor.multiThread) {
-                synchronized (this) {
-                    if (getSurface() != null) getSurface().release();
-                    surfaceTexture.release();
-                    surfaceTexture = null;
-                }
-            } else {
+            // super.release() and getSurface()/surfaceTexture teardown now share the same
+            // lock used by flush(), so a flush() task queued on the (cached, unordered)
+            // WorkThreadExecutor thread pool can never run concurrently with this teardown.
+            synchronized (this) {
+                FlutterPagPlayer.super.release();
                 if (getSurface() != null) getSurface().release();
-                surfaceTexture.release();
+                if (surfaceTexture != null) surfaceTexture.release();
                 surfaceTexture = null;
             }
-
         });
-        isRelease = true;
     }
 
     @Override
@@ -163,18 +161,17 @@ public class FlutterPagPlayer extends PAGPlayer {
             return false;
         }
         WorkThreadExecutor.getInstance().post(() -> {
-            if (WorkThreadExecutor.multiThread) {
-                synchronized (this) {
-                    FlutterPagPlayer.super.flush();
+            synchronized (this) {
+                // Re-check isRelease *inside* the lock: closes the race where release()
+                // runs (and flips isRelease) between the check above and this task
+                // actually executing on the thread pool.
+                if (isRelease) {
+                    return;
                 }
-            } else {
                 FlutterPagPlayer.super.flush();
             }
-
         });
         return true;
-
-//        return super.flush();
     }
 
     // 更新PAG渲染
