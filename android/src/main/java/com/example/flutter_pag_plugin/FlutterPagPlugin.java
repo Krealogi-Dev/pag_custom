@@ -256,6 +256,10 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
         }
 
         WorkThreadExecutor.getInstance().post(() -> {
+            if (pagPlayer.isRelease()) {
+                handler.post(() -> result.error("-1102", "PagPlayer sudah di-release", null));
+                return;
+            }
             pagPlayer.updateBufferSize(composition.width(), composition.height());
             pagPlayer.init(composition, repeatCount, initProgress, channel, Long.parseLong(currentId));
             final HashMap<String, Object> callback = new HashMap<String, Object>();
@@ -267,6 +271,10 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
             handler.post(new Runnable() {
                 @Override
                 public void run() {
+                    if (pagPlayer.isRelease()) {
+                        result.error("-1102", "PagPlayer sudah di-release", null);
+                        return;
+                    }
                     if (autoPlay) {
                         pagPlayer.start();
                     }
@@ -306,31 +314,54 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
     }
 
     void release(MethodCall call) {
-        if (useCache && freeEntryPool.size() < maxFreePoolSize) {
-            FlutterPagPlayer flutterPagPlayer = layerMap.get(getTextureId(call));
-            int id = call.argument(_argumentTextureId);
-            if (flutterPagPlayer != null) {
-                flutterPagPlayer.cancel();
-                WorkThreadExecutor.getInstance().post(() -> {
-                    flutterPagPlayer.clear();
-                    if (id >= 0) {
-                        handler.post(() -> {
-                            freeEntryPool.add(id + "");
-                        });
+        final String key = getTextureId(call);
+        final FlutterPagPlayer flutterPagPlayer = layerMap.get(key);
+        if (flutterPagPlayer == null) {
+            return;
+        }
+        // Already pooled (duplicate release): pooling the same id twice would hand the
+        // same player to two widgets.
+        if (freeEntryPool.contains(key)) {
+            return;
+        }
+
+        if (useCache) {
+            flutterPagPlayer.cancel();
+            WorkThreadExecutor.getInstance().post(() -> {
+                flutterPagPlayer.clear();
+                // Pool bookkeeping happens on the main thread, and the size / duplicate
+                // checks are done here (not at call time) so concurrent releases can't
+                // overshoot maxFreePoolSize or pool the same id twice.
+                handler.post(() -> {
+                    if (freeEntryPool.contains(key)) {
+                        return;
+                    }
+                    if (freeEntryPool.size() < maxFreePoolSize && layerMap.get(key) == flutterPagPlayer) {
+                        freeEntryPool.add(key);
+                    } else {
+                        destroyEntry(key);
                     }
                 });
-            }
+            });
         } else {
-            FlutterPagPlayer flutterPagPlayer = layerMap.remove(getTextureId(call));
-            if (flutterPagPlayer != null) {
-                flutterPagPlayer.stop();
-                flutterPagPlayer.release();
-            }
+            destroyEntry(key);
+        }
+    }
 
-            TextureRegistry.SurfaceTextureEntry entry = entryMap.remove(getTextureId(call));
-            if (entry != null) {
-                entry.release();
-            }
+    // Tears down the player, then releases the texture entry only AFTER the native
+    // teardown finished, so the SurfaceTexture is never freed under a running flush().
+    private void destroyEntry(String key) {
+        final FlutterPagPlayer player = layerMap.remove(key);
+        final TextureRegistry.SurfaceTextureEntry entry = entryMap.remove(key);
+        if (player != null) {
+            player.stop();
+            player.release(() -> {
+                if (entry != null) {
+                    handler.post(entry::release);
+                }
+            });
+        } else if (entry != null) {
+            entry.release();
         }
     }
 
@@ -369,8 +400,8 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
 
     // 释放全部资源
     public void releaseAll() {
-        for (FlutterPagPlayer pagPlayer : layerMap.values()) {
-            pagPlayer.release();
+        for (String key : new ArrayList<>(layerMap.keySet())) {
+            destroyEntry(key);
         }
         for (TextureRegistry.SurfaceTextureEntry entry : entryMap.values()) {
             entry.release();

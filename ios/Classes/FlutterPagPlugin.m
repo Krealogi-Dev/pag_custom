@@ -168,12 +168,17 @@
         if (!pagData) {
             __weak typeof(self) weak_self = self;
             [TGFlutterPagDownloadManager download:url completionHandler:^(NSData * _Nonnull data, NSError * _Nonnull error) {
-                if (data) {
-                    [weak_self setCacheData:key data:pagData];
-                    [weak_self pagRenderWithPagData:data progress:initProgress repeatCount:repeatCount autoPlay:autoPlay result:result];
-                }else{
-                    result(@-1);
-                }
+                // NSURLSession calls back on a background queue; _renderMap, texture
+                // registration and FlutterResult must all be used on the main thread.
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __strong typeof(weak_self) strong_self = weak_self;
+                    if (data && strong_self) {
+                        [strong_self setCacheData:key data:data];
+                        [strong_self pagRenderWithPagData:data progress:initProgress repeatCount:repeatCount autoPlay:autoPlay result:result];
+                    }else{
+                        result(@-1);
+                    }
+                });
             }];
         }else{
             [self pagRenderWithPagData:pagData progress:initProgress repeatCount:repeatCount autoPlay:autoPlay result:result];

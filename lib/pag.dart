@@ -188,29 +188,36 @@ class PAGViewState extends State<PAGView> {
         rawWidth = result[_argumentWidth] ?? 0;
         rawHeight = result[_argumentHeight] ?? 0;
       }
-      if (mounted) {
-        setState(() {
-          _hasLoadTexture = true;
-        });
-        widget.onInit?.call();
-      } else {
-        _channel.invokeMethod(_nativeRelease, {_argumentTextureId: _textureId});
+      if (!mounted) {
+        // Disposed while init was in flight: release the texture and do NOT register
+        // a handler, otherwise it leaks and (with the native id pool) stale callbacks
+        // reach a dead widget when the id is reused.
+        final int staleId = _textureId;
+        _textureId = -1;
+        if (staleId >= 0) {
+          _channel.invokeMethod(_nativeRelease, {_argumentTextureId: staleId});
+        }
+        return;
       }
+
+      // 事件回调 (registered before onInit so no event is dropped)
+      if (_textureId >= 0) {
+        var events = <String, PAGCallback?>{
+          _eventStart: widget.onAnimationStart,
+          _eventEnd: widget.onAnimationEnd,
+          _eventCancel: widget.onAnimationCancel,
+          _eventRepeat: widget.onAnimationRepeat,
+        };
+        callbackHandlers[_textureId] = (event) {
+          events[event]?.call();
+        };
+      }
+      setState(() {
+        _hasLoadTexture = true;
+      });
+      widget.onInit?.call();
     } catch (e) {
       print('PAGViewState error: $e');
-    }
-
-    // 事件回调
-    if (_textureId >= 0) {
-      var events = <String, PAGCallback?>{
-        _eventStart: widget.onAnimationStart,
-        _eventEnd: widget.onAnimationEnd,
-        _eventCancel: widget.onAnimationCancel,
-        _eventRepeat: widget.onAnimationRepeat,
-      };
-      callbackHandlers[_textureId] = (event) {
-        events[event]?.call();
-      };
     }
   }
 
@@ -274,8 +281,14 @@ class PAGViewState extends State<PAGView> {
   @override
   void dispose() {
     super.dispose();
-    _channel.invokeMethod(_nativeRelease, {_argumentTextureId: _textureId});
-    callbackHandlers.remove(_textureId);
+    // Init still pending (_textureId == -1): newTexture() releases it when it completes.
+    final int id = _textureId;
+    _hasLoadTexture = false;
+    _textureId = -1;
+    if (id >= 0) {
+      callbackHandlers.remove(id);
+      _channel.invokeMethod(_nativeRelease, {_argumentTextureId: id});
+    }
   }
 }
 

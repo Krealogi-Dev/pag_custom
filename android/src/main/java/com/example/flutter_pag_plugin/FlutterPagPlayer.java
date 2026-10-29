@@ -4,6 +4,8 @@ import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.graphics.SurfaceTexture;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.animation.LinearInterpolator;
 
 import org.libpag.PAGFile;
@@ -17,6 +19,7 @@ import io.flutter.plugin.common.MethodChannel;
 
 public class FlutterPagPlayer extends PAGPlayer {
 
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ValueAnimator animator = ValueAnimator.ofFloat(0.0F, 1.0F);
     private volatile boolean isRelease;
     private long currentPlayTime = 0L;
@@ -52,7 +55,15 @@ public class FlutterPagPlayer extends PAGPlayer {
         this.textureId = textureId;
         progress = initProgress;
         this.initProgress = initProgress;
-        initAnimator(repeatCount);
+        // init() runs on a worker thread, but ValueAnimator is only safe on the main
+        // thread (start()/cancel() come from there). Posting keeps FIFO order with the
+        // plugin's later handler.post(start/result.success).
+        final int count = repeatCount;
+        mainHandler.post(() -> {
+            if (!isRelease) {
+                initAnimator(count);
+            }
+        });
     }
 
     private boolean valid() {
@@ -69,11 +80,25 @@ public class FlutterPagPlayer extends PAGPlayer {
     }
 
     public void setProgressValue(double value) {
+        if (isRelease) {
+            return;
+        }
         this.progress = Math.max(0.0D, Math.min(value, 1.0D));
         this.currentPlayTime = (long) (progress * (double) this.animator.getDuration());
         this.animator.setCurrentPlayTime(currentPlayTime);
-        setProgress(progress);
+        safeSetProgress(progress);
         flush();
+    }
+
+    // setProgress() touches the native composition, so it must share the lock with
+    // flush()/clear()/release() which run on the worker pool.
+    private void safeSetProgress(double value) {
+        synchronized (this) {
+            if (isRelease) {
+                return;
+            }
+            setProgress(value);
+        }
     }
 
     public void start() {
@@ -136,6 +161,15 @@ public class FlutterPagPlayer extends PAGPlayer {
 
     @Override
     public void release() {
+        release(null);
+    }
+
+    /**
+     * @param onReleased runs on the worker thread after the native teardown finished
+     *                   (inside no lock), so callers can release dependent resources
+     *                   (e.g. the TextureRegistry entry) without racing a flush().
+     */
+    public void release(final Runnable onReleased) {
         // isRelease is set first (before any teardown) so any flush() call made after
         // release() has been requested is rejected as early as possible.
         isRelease = true;
@@ -151,6 +185,9 @@ public class FlutterPagPlayer extends PAGPlayer {
                 if (getSurface() != null) getSurface().release();
                 if (surfaceTexture != null) surfaceTexture.release();
                 surfaceTexture = null;
+            }
+            if (onReleased != null) {
+                onReleased.run();
             }
         });
     }
@@ -181,7 +218,7 @@ public class FlutterPagPlayer extends PAGPlayer {
         public void onAnimationUpdate(ValueAnimator animation) {
             progress = (double) (Float) animation.getAnimatedValue();
             currentPlayTime = (long) (progress * (double) animator.getDuration());
-            setProgress(progress);
+            safeSetProgress(progress);
             flush();
         }
     };

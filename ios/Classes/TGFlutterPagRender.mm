@@ -47,10 +47,37 @@ static int64_t GetCurrentTimeUS() {
     int _repeatCount;
     int64_t start;
     int64_t _currRepeatCount;
+    // copyPixelBuffer runs on the raster thread, while start/stop/setProgress run on
+    // the main thread. This lock guards the shared playback state and the PAGPlayer.
+    NSLock *_lock;
+}
+
+// Events can originate from the raster thread (copyPixelBuffer), but the method
+// channel must be invoked from the platform (main) thread.
+- (void)emitEvent:(NSString *)event {
+    PAGEventCallback callback = _eventCallback;
+    if (callback == nil) {
+        return;
+    }
+    if ([NSThread isMainThread]) {
+        callback(event);
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            callback(event);
+        });
+    }
 }
 
 - (CVPixelBufferRef)copyPixelBuffer {
-    
+    BOOL sendEnd = NO;
+    BOOL sendRepeat = NO;
+    CVPixelBufferRef target = NULL;
+
+    [_lock lock];
+    if (_player == nil || _surface == nil) {
+        [_lock unlock];
+        return NULL;
+    }
     int64_t duration = [_player duration];
     if(duration <= 0){
         duration = 1;
@@ -66,7 +93,7 @@ static int64_t GetCurrentTimeUS() {
         value = 1;
         if(!_endEvent){
             _endEvent = YES;
-            _eventCallback(EventEnd);
+            sendEnd = YES;
         }
     } else {
         _endEvent = NO;
@@ -74,13 +101,21 @@ static int64_t GetCurrentTimeUS() {
         value = static_cast<double>(playTime) / duration;
         if (_currRepeatCount < count) {
             _currRepeatCount = count;
-            _eventCallback(EventRepeat);
+            sendRepeat = YES;
         }
     }
     [_player setProgress:value];
     [_player flush];
-    CVPixelBufferRef target = [_surface getCVPixelBuffer];
+    target = [_surface getCVPixelBuffer];
     CVBufferRetain(target);
+    [_lock unlock];
+
+    if (sendEnd) {
+        [self emitEvent:EventEnd];
+    }
+    if (sendRepeat) {
+        [self emitEvent:EventRepeat];
+    }
     return target;
 }
 
@@ -90,6 +125,7 @@ static int64_t GetCurrentTimeUS() {
                   eventCallback:(PAGEventCallback)eventCallback
 {
     if (self = [super init]) {
+        _lock = [[NSLock alloc] init];
         _frameUpdateCallback = frameUpdateCallback;
         _eventCallback = eventCallback;
         _initProgress = initProgress;
@@ -113,10 +149,12 @@ static int64_t GetCurrentTimeUS() {
         _displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(update)];
         [_displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
     }
+    [_lock lock];
     if(start <= 0){
        start = GetCurrentTimeUS();
     }
-    _eventCallback(EventStart);
+    [_lock unlock];
+    [self emitEvent:EventStart];
 }
 
 - (void)stopRender
@@ -125,14 +163,20 @@ static int64_t GetCurrentTimeUS() {
         [_displayLink invalidate];
         _displayLink = nil;
     }
+    BOOL sendEnd = NO;
+    [_lock lock];
     [_player setProgress:_initProgress];
     [_player flush];
-    _frameUpdateCallback();
     if(!_endEvent){
         _endEvent = YES;
-        _eventCallback(EventEnd);
+        sendEnd = YES;
     }
-    _eventCallback(EventCancel);
+    [_lock unlock];
+    _frameUpdateCallback();
+    if (sendEnd) {
+        [self emitEvent:EventEnd];
+    }
+    [self emitEvent:EventCancel];
 }
 
 - (void)pauseRender{
@@ -146,13 +190,17 @@ static int64_t GetCurrentTimeUS() {
 }
 
 - (void)setProgress:(double)progress{
+    [_lock lock];
     [_player setProgress:progress];
     [_player flush];
+    [_lock unlock];
     _frameUpdateCallback();
 }
 
 - (NSArray<NSString *> *)getLayersUnderPoint:(CGPoint)point{
+    [_lock lock];
     NSArray<PAGLayer*>* layers = [_player getLayersUnderPoint:point];
+    [_lock unlock];
     NSMutableArray<NSString *> *layerNames = [[NSMutableArray alloc] init];
     for (PAGLayer *layer in layers) {
         [layerNames addObject:layer.layerName];
