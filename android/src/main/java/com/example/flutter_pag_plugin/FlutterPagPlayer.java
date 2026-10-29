@@ -176,7 +176,7 @@ public class FlutterPagPlayer extends PAGPlayer {
         animator.cancel();
         animator.removeAllUpdateListeners();
         animator.removeAllListeners();
-        WorkThreadExecutor.getInstance().post(() -> {
+        WorkThreadExecutor.getInstance().postInCertainThread(() -> {
             // super.release() and getSurface()/surfaceTexture teardown now share the same
             // lock used by flush(), so a flush() task queued on the (cached, unordered)
             // WorkThreadExecutor thread pool can never run concurrently with this teardown.
@@ -197,7 +197,7 @@ public class FlutterPagPlayer extends PAGPlayer {
         if (isRelease) {
             return false;
         }
-        WorkThreadExecutor.getInstance().post(() -> {
+        WorkThreadExecutor.getInstance().postInCertainThread(() -> {
             synchronized (this) {
                 // Re-check isRelease *inside* the lock: closes the race where release()
                 // runs (and flips isRelease) between the check above and this task

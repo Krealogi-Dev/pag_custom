@@ -40,9 +40,15 @@ public class WorkThreadExecutor {
         }
     }
 
+    /**
+     * Serial queue for everything that touches the GL context (flush, clear, release,
+     * surface resize, init). tgfx binds a GL context to a thread, so running these on the
+     * cached pool let two players use/destroy contexts from different threads at once
+     * ("isShaderOrProgramObject" GL errors, then a null deref inside PAGSurface::draw).
+     */
     public void postInCertainThread(Runnable task) {
         if (multiThread) {
-            executor.execute(task);
+            singleThreadExecutor.execute(task);
         } else {
             task.run();
         }

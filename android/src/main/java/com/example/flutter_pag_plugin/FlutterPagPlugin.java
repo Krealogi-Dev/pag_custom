@@ -255,7 +255,7 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
             }
         }
 
-        WorkThreadExecutor.getInstance().post(() -> {
+        WorkThreadExecutor.getInstance().postInCertainThread(() -> {
             if (pagPlayer.isRelease()) {
                 handler.post(() -> result.error("-1102", "PagPlayer sudah di-release", null));
                 return;
@@ -327,7 +327,7 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
 
         if (useCache) {
             flutterPagPlayer.cancel();
-            WorkThreadExecutor.getInstance().post(() -> {
+            WorkThreadExecutor.getInstance().postInCertainThread(() -> {
                 flutterPagPlayer.clear();
                 // Pool bookkeeping happens on the main thread, and the size / duplicate
                 // checks are done here (not at call time) so concurrent releases can't
