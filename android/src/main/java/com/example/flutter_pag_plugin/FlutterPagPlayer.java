@@ -13,7 +13,6 @@ import org.libpag.PAGPlayer;
 import org.libpag.PAGSurface;
 
 import java.util.HashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.flutter.plugin.common.MethodChannel;
 
@@ -23,10 +22,6 @@ public class FlutterPagPlayer extends PAGPlayer {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ValueAnimator animator = ValueAnimator.ofFloat(0.0F, 1.0F);
     private volatile boolean isRelease;
-    // At most one flush task queued per player. Every animator tick calls flush(); on
-    // the shared serial GL queue an unbounded backlog of flushes from looping animations
-    // would starve init/release tasks of other players (e.g. a newly sent gift).
-    private final AtomicBoolean flushPending = new AtomicBoolean(false);
     private long currentPlayTime = 0L;
     private double progress = 0;
     private double initProgress = 0;
@@ -181,7 +176,7 @@ public class FlutterPagPlayer extends PAGPlayer {
         animator.cancel();
         animator.removeAllUpdateListeners();
         animator.removeAllListeners();
-        WorkThreadExecutor.getInstance().postInCertainThread(() -> {
+        WorkThreadExecutor.getInstance().post(() -> {
             // super.release() and getSurface()/surfaceTexture teardown now share the same
             // lock used by flush(), so a flush() task queued on the (cached, unordered)
             // WorkThreadExecutor thread pool can never run concurrently with this teardown.
@@ -202,13 +197,7 @@ public class FlutterPagPlayer extends PAGPlayer {
         if (isRelease) {
             return false;
         }
-        if (!flushPending.compareAndSet(false, true)) {
-            // A queued flush will render the latest progress when it runs.
-            return true;
-        }
-        WorkThreadExecutor.getInstance().postInCertainThread(() -> {
-            // Cleared before rendering so progress changes during the render queue a new flush.
-            flushPending.set(false);
+        WorkThreadExecutor.getInstance().post(() -> {
             synchronized (this) {
                 // Re-check isRelease *inside* the lock: closes the race where release()
                 // runs (and flips isRelease) between the check above and this task
