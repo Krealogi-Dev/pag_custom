@@ -91,6 +91,15 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
     private boolean useCache = true;
     private int maxFreePoolSize = 10;
 
+    private static final String DBG = "PAGDBG";
+
+    // Debug: snapshot of plugin state so leaks show up as ever-growing counters.
+    private void logState(String where) {
+        Log.d(DBG, where + " | layers=" + layerMap.size() + " entries=" + entryMap.size()
+                + " pool=" + freeEntryPool.size() + "/" + maxFreePoolSize + " thread="
+                + Thread.currentThread().getName());
+    }
+
     public FlutterPagPlugin() {
     }
 
@@ -221,6 +230,7 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
 
     private void initPagPlayerAndCallback(PAGFile composition, MethodCall call, final Result result) {
         if (composition == null) {
+            Log.w(DBG, "init FAILED: composition is null");
             result.error("-1100", "load composition is null! ", null);
             return;
         }
@@ -242,6 +252,7 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
             pagPlayer.setSurface(pagSurface);
             pagPlayer.setSurfaceTexture(surfaceTexture);
             layerMap.put(String.valueOf(entry.id()), pagPlayer);
+            logState("init NEW id=" + currentId);
         } else {
             currentId = freeEntryPool.removeFirst();
             pagPlayer = layerMap.get(currentId);
@@ -253,6 +264,7 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
                 result.error("-1102", "PagPlayer异常！", null);
                 return;
             }
+            logState("init REUSE id=" + currentId);
         }
 
         WorkThreadExecutor.getInstance().postInCertainThread(() -> {
@@ -317,13 +329,16 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
         final String key = getTextureId(call);
         final FlutterPagPlayer flutterPagPlayer = layerMap.get(key);
         if (flutterPagPlayer == null) {
+            Log.d(DBG, "release IGNORED (unknown id=" + key + ")");
             return;
         }
         // Already pooled (duplicate release): pooling the same id twice would hand the
         // same player to two widgets.
         if (freeEntryPool.contains(key)) {
+            Log.w(DBG, "release IGNORED (duplicate, already pooled id=" + key + ")");
             return;
         }
+        logState("release id=" + key);
 
         if (useCache) {
             flutterPagPlayer.cancel();
@@ -338,6 +353,7 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
                     }
                     if (freeEntryPool.size() < maxFreePoolSize && layerMap.get(key) == flutterPagPlayer) {
                         freeEntryPool.add(key);
+                        logState("pooled id=" + key);
                     } else {
                         destroyEntry(key);
                     }
@@ -351,6 +367,7 @@ public class FlutterPagPlugin implements FlutterPlugin, MethodCallHandler {
     // Tears down the player, then releases the texture entry only AFTER the native
     // teardown finished, so the SurfaceTexture is never freed under a running flush().
     private void destroyEntry(String key) {
+        logState("destroy id=" + key);
         final FlutterPagPlayer player = layerMap.remove(key);
         final TextureRegistry.SurfaceTextureEntry entry = entryMap.remove(key);
         if (player != null) {
